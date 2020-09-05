@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# get the base project directory of this script
+proj_dir=$( cd "$( dirname "${BASH_SOURCE[0]}" )"/.. && pwd )
+
+echo "Checking for running Beam pipeline..."
+pid=$(pgrep -f $proj_dir/build/classes/java/main)
+if [[ -n $pid ]]; then
+  echo "Pipeline is currently running. Killing it now..."
+  kill -9 $pid
+fi
+
+# start the pipeline in the background
+echo "Building and executing new pipeline..."
+$proj_dir/gradlew runDemoPipelineDirect --rerun-tasks --no-daemon > ~/.beam_direct_runner.log 2>&1 < /dev/null &
+
+# give the build time to fail before checking to see if it started successfully
+sleep 15
+isRunning=$(pgrep -f $proj_dir/build/classes/java/main)
+if [[ $isRunning -gt 0 ]]; then
+  echo "Successfully started Beam direct runner in the background! Build and execution output can be found at ~/.beam_direct_runner.log."
+  exit 0
+else
+  echo "ERROR: Failed to start direct runner! Here's the build output:"
+  cat ~/.beam_direct_runner.log
+  exit 1
+fi

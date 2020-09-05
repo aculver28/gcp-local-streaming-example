@@ -1,0 +1,53 @@
+plugins {
+  id 'application'
+  id 'com.github.sherter.google-java-format' version '0.9'
+}
+
+ext {
+  beamVersion = '2.20.0'
+}
+
+repositories {
+  mavenCentral()
+  google()
+}
+
+dependencies {
+  // Beam resources
+  implementation "org.apache.beam:beam-sdks-java-core:${beamVersion}"
+  implementation "org.apache.beam:beam-sdks-java-extensions-protobuf:${beamVersion}"
+  implementation "org.apache.beam:beam-sdks-java-io-google-cloud-platform:${beamVersion}"
+  implementation "org.apache.beam:beam-runners-google-cloud-dataflow-java:${beamVersion}"
+  runtime "org.apache.beam:beam-runners-direct-java:${beamVersion}"
+  runtime 'org.slf4j:slf4j-jdk14:1.7.25'
+  // BigTable resources
+  implementation 'com.google.cloud:google-cloud-bigtable:1.15.0'
+}
+
+task resources {
+  def resourcesDir = new File('build/resources/main')
+  resourcesDir.mkdirs()
+}
+
+run.mustRunAfter 'resources'
+
+task runDemoPipelineDirect(type:JavaExec) {
+  def localProjectId = "whatever-you-want"
+  def subscription = "projects/${localProjectId}/subscriptions/my_emulated_subscription"
+  def tableName = "my_emulated_table"
+  classpath = sourceSets.main.runtimeClasspath
+  main = 'dev.culver.example.App'
+  args "--runner=DirectRunner", "--bigtableProjectId=${localProjectId}",
+      "--bigtableInstanceId=localhost:8086", "--bigtableTableName=${tableName}",
+      "--pubsubRootUrl=http://localhost:8085", "--pubsubSubscriptionName=${subscription}"
+}
+
+build.dependsOn(tasks.googleJavaFormat)
+verifyGoogleJavaFormat.mustRunAfter(tasks.googleJavaFormat)
+runDemoPipelineDirect.mustRunAfter 'resources'
+
+group = 'dev.culver'
+version = '1.0'
+sourceCompatibility = '1.8'
+targetCompatibility = '1.8'
+mainClassName = 'dev.culver.example.App'

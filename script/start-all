@@ -1,0 +1,135 @@
+#!/bin/bash
+# get the parent directory of this script
+curr_dir=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+# also get the project base directory as well
+proj_dir=$( cd "$( dirname "${BASH_SOURCE[0]}" )"/.. && pwd )
+
+############# INSTALL DEPENDENCIES #############
+# make sure gcloud CLI is installed
+echo "Checking gcloud installation..."
+cli=$(which gcloud)
+if [[ -z $cli ]]; then
+  echo "ERROR: gcloud CLI not found. Please install and configure the gcloud CLI prior to executing this script."
+  return 1
+fi
+
+# make sure the emulators are actually installed
+echo "Installing gcloud beta components if needed..."
+echo "y" | gcloud components install beta > /dev/null 2>&1
+echo "Installing bigtable emulator if needed..."
+echo "y" | gcloud components install bigtable > /dev/null 2>&1
+echo "Installing pubsub emulator if needed..."
+echo "y" | gcloud components install pubsub-emulator > /dev/null 2>&1
+echo "Installing cbt CLI if needed..."
+echo "y" | gcloud components install cbt > /dev/null 2>&1
+
+# stub project ID we'll use for the emulators
+PROJECT_ID=whatever-you-want
+
+############# CLEAN UP ANY RUNNING PROCESSES WE NEED TO START #############
+# shut down Beam pipeline if it's running
+beam_pid=$(pgrep -f $proj_dir/build/classes/java/main)
+kill -9 $beam_pid > /dev/null 2>&1
+
+# shut down cbt emulator if it's running
+cbt_pid=$(pgrep -f [g]oogle-cloud-sdk/platform/bigtable-emulator/cbtemulator)
+kill -9 $cbt_pid > /dev/null 2>&1
+
+# shut down pubsub emulator if it's running
+ps_pid=$(pgrep -f [g]oogle-cloud-sdk/platform/pubsub-emulator/lib/cloud-pubsub-emulator)
+kill -9 $ps_pid > /dev/null 2>&1
+
+# clear the environment variables in case values change
+unset BIGTABLE_EMULATOR_HOST
+unset PUBSUB_EMULATOR_HOST
+unset PUBSUB_PROJECT_ID
+
+############# START THE BIGTABLE EMULATOR #############
+echo "Starting cbt emulator..."
+sleep 3 # give the emulator a few seconds to start or fail
+gcloud beta emulators bigtable start --host-port=localhost:8086 > ~/.cbt_emulator.log 2>&1 &
+cbt_err=$(tail -n 1 ~/.cbt_emulator.log | grep -i failed)
+if [[ -n $cbt_err ]]; then
+  echo $cbt_err
+  return 1
+fi
+
+############# START THE PUB/SUB EMULATOR #############
+echo "Starting pubsub emulator..."
+gcloud beta emulators pubsub start --project=$PROJECT_ID --host-port=localhost:8085 > ~/.pubsub_emulator.log 2>&1 &
+sleep 3 # give the emulator a few seconds to start or fail
+pubsub_err=$(head -n 1 ~/.pubsub_emulator.log | grep -i ERROR)
+if [[ -n $pubsub_err ]]; then
+  echo "Failed to start pubsub emulator. Stopping cbt emulator and exiting."
+  prc_id=$(pgrep -f [g]oogle-cloud-sdk/platform/bigtable-emulator/cbtemulator)
+  kill -9 $prc_id > /dev/null 2>&1
+  return 1
+fi
+
+############# SET UP ENVIRONMENT CONFIG TO USE THE EMULATORS #############
+echo "Configuring local environment to use the cbt emulator..."
+$(gcloud beta emulators bigtable env-init)
+
+cat <<EOF > ~/.cbtrc
+project = ${PROJECT_ID}
+instance = ${BIGTABLE_EMULATOR_HOST}
+creds = /dev/null
+EOF
+
+echo "Configuring local environment to use the pubsub emulator..."
+$(gcloud beta emulators pubsub env-init)
+export PUBSUB_PROJECT_ID=$PROJECT_ID
+
+echo "Installing google-cloud-pubsub python package..."
+pip install google-cloud-pubsub==1.4.2 > /dev/null 2>&1
+if [[ $? -ne 0 ]]; then
+  echo "WARNING: Failed to install required python package [google-cloud-pubsub==1.4.2]. Python scripts attempting to use the emulator will likely fail."
+fi
+
+echo "Successfully started the cbt and pubsub emulators! Creating resources on those emulators..."
+############# CREATE CBT TABLE #############
+echo "Creating table [my_emulated_table]..."
+cbt -project whatever-you-want -instance ${BIGTABLE_EMULATOR_HOST} createtable my_emulated_table
+if [[ $? -ne 0 ]]; then
+  echo "ERROR: Failed to create table in cbt. Exiting..."
+  return 1
+fi
+echo "Creating column family [cf1] for table [my_emulated_table]..."
+cbt -project whatever-you-want -instance ${BIGTABLE_EMULATOR_HOST} createfamily my_emulated_table cf1
+
+############# CREATE PUB/SUB TOPIC AND SUBSCRIPTION #############
+echo "Creating pubsub topic [my_emulated_topic]..."
+$curr_dir/publisher $PUBSUB_PROJECT_ID create my_emulated_topic >> ~/.pubsub_emulator.log 2>&1
+err=$(tail -n 1 ~/.pubsub_emulator.log | grep -i "publisher: error:")
+if [[ -n $err ]]; then
+  echo "Failed to create pubsub topic on emulator:"
+  echo $err
+  return 1
+fi
+
+echo "Creating pubsub subscription [my_emulated_subscription] for topic [my_emulated_topic]..."
+$curr_dir/subscriber $PUBSUB_PROJECT_ID create my_emulated_topic my_emulated_subscription >> ~/.pubsub_emulator.log 2>&1
+if [[ -n $err ]]; then
+  echo "Failed to create pubsub subscription to topic on on emulator:"
+  echo $err
+  return 1
+fi
+
+echo "All emulators are up and running!"
+
+############# START THE BEAM PIPELINE #############
+# start the pipeline in the background
+echo "Building and executing new pipeline..."
+$proj_dir/gradlew runDemoPipelineDirect --rerun-tasks --no-daemon --console=plain > ~/.beam_direct_runner.log 2>&1 < /dev/null &
+
+# give the build time to fail before checking to see if it started successfully
+sleep 15
+isRunning=$(pgrep -f $proj_dir/build/classes/java/main)
+if [[ $isRunning -gt 0 ]]; then
+  echo "Successfully started Beam direct runner in the background! Build and execution output can be found at ~/.beam_direct_runner.log."
+  return 0
+else
+  echo "ERROR: Failed to start direct runner! Here's the build output:"
+  cat ~/.beam_direct_runner.log
+  return 1
+fi
