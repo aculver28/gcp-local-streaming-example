@@ -4,12 +4,16 @@ plugins {
 }
 
 ext {
-  beamVersion = '2.20.0'
+  beamVersion = '2.38.0'
 }
 
 repositories {
   mavenCentral()
   google()
+  maven {
+    url "http://packages.confluent.io/maven/"
+    allowInsecureProtocol true
+  }
 }
 
 dependencies {
@@ -18,10 +22,12 @@ dependencies {
   implementation "org.apache.beam:beam-sdks-java-extensions-protobuf:${beamVersion}"
   implementation "org.apache.beam:beam-sdks-java-io-google-cloud-platform:${beamVersion}"
   implementation "org.apache.beam:beam-runners-google-cloud-dataflow-java:${beamVersion}"
-  runtime "org.apache.beam:beam-runners-direct-java:${beamVersion}"
-  runtime 'org.slf4j:slf4j-jdk14:1.7.25'
+  runtimeOnly "org.apache.beam:beam-runners-direct-java:${beamVersion}"
+  runtimeOnly 'org.slf4j:slf4j-jdk14:1.7.36'
+
   // BigTable resources
-  implementation 'com.google.cloud:google-cloud-bigtable:1.15.0'
+  implementation platform('com.google.cloud:libraries-bom:25.2.0')
+  implementation 'com.google.cloud:google-cloud-bigtable'
 }
 
 task resources {
